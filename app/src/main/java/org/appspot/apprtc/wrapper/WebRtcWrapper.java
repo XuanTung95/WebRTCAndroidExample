@@ -3,6 +3,7 @@ package org.appspot.apprtc.wrapper;
 import android.annotation.TargetApi;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Application;
 import android.app.FragmentTransaction;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -14,6 +15,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.View;
@@ -21,6 +23,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import org.appspot.apprtc.AppRTCAudioManager;
@@ -56,7 +59,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
-public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEvents,
+public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
         PeerConnectionClient.PeerConnectionEvents,
         CallFragment.OnCallEvents {
     private static final String TAG = "CallRTCClient";
@@ -179,36 +182,45 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
 
     // Video enabled
     boolean videoCallEnabled;
+    Intent intent;
+    Context applicationContext;
+    Activity activity;
+    Handler handler;
 
-    @Override
+    public WebRtcWrapper(@NonNull Intent intent, @NonNull Context applicationContext, @Nullable Activity activity) {
+        this.intent = intent;
+        this.applicationContext = applicationContext;
+        this.activity = activity;
+        this.handler = new Handler(Looper.myLooper());
+    }
+
     // TODO(bugs.webrtc.org/8580): LayoutParams.FLAG_TURN_SCREEN_ON and
     // LayoutParams.FLAG_SHOW_WHEN_LOCKED are deprecated.
     @SuppressWarnings("deprecation")
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
+    public void onCreate() {
         final EglBase eglBase = EglBase.create();
-        final Intent intent = getIntent();
         videoCallEnabled = intent.getBooleanExtra(EXTRA_VIDEO_CALL, false);
 
-        Thread.setDefaultUncaughtExceptionHandler(new UnhandledExceptionHandler(this));
+        //Thread.setDefaultUncaughtExceptionHandler(new UnhandledExceptionHandler(this));
 
         // Set window styles for fullscreen-window size. Needs to be done before
         // adding content.
-        requestWindowFeature(Window.FEATURE_NO_TITLE);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
-        getWindow().getDecorView().setSystemUiVisibility(getSystemUiVisibility());
-        setContentView(R.layout.activity_call);
-
+        if (activity!=null) {
+            activity.requestWindowFeature(Window.FEATURE_NO_TITLE);
+            activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+            activity.getWindow().getDecorView().setSystemUiVisibility(getSystemUiVisibility());
+            activity.setContentView(R.layout.activity_call);
+        }
         connected = false;
         signalingParameters = null;
 
         // Create UI controls.
-        if (videoCallEnabled) {
+        if (videoCallEnabled && activity!=null) {
             remoteProxyRenderer = new ProxyVideoSink();
             localProxyVideoSink = new ProxyVideoSink();
-            pipRenderer = findViewById(R.id.pip_video_view);
-            fullscreenRenderer = findViewById(R.id.fullscreen_video_view);
+            pipRenderer = activity.findViewById(R.id.pip_video_view);
+            fullscreenRenderer = activity.findViewById(R.id.fullscreen_video_view);
             callFragment = new CallFragment();
             hudFragment = new HudFragment();
             // Show/hide call control fragment on view click.
@@ -258,21 +270,24 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
             setSwappedFeeds(true /* isSwappedFeeds */);
         }
         // Check for mandatory permissions.
-        for (String permission : MANDATORY_PERMISSIONS) {
-            if (checkCallingOrSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
-                logAndToast("Permission " + permission + " is not granted");
-                setResult(RESULT_CANCELED);
-                finish();
-                return;
+        if (activity!=null) {
+            for (String permission : MANDATORY_PERMISSIONS) {
+                if (activity.checkCallingOrSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+                    logAndToast("Permission " + permission + " is not granted");
+                    activity.setResult(Activity.RESULT_CANCELED);
+                    activity.finish();
+                    return;
+                }
             }
         }
-
         Uri roomUri = intent.getData();
         if (roomUri == null) {
-            logAndToast(getString(R.string.missing_url));
+            logAndToast(applicationContext.getString(R.string.missing_url));
             Log.e(TAG, "Didn't get any URL in intent!");
-            setResult(RESULT_CANCELED);
-            finish();
+            if (activity!=null) {
+                activity.setResult(Activity.RESULT_CANCELED);
+                activity.finish();
+            }
             return;
         }
 
@@ -280,10 +295,12 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
         String roomId = intent.getStringExtra(EXTRA_ROOMID);
         Log.d(TAG, "Room ID: " + roomId);
         if (roomId == null || roomId.length() == 0) {
-            logAndToast(getString(R.string.missing_url));
+            logAndToast(applicationContext.getString(R.string.missing_url));
             Log.e(TAG, "Incorrect room ID in intent!");
-            setResult(RESULT_CANCELED);
-            finish();
+            if (activity!=null) {
+                activity.setResult(Activity.RESULT_CANCELED);
+                activity.finish();
+            }
             return;
         }
 
@@ -343,16 +360,16 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
 
         // Create CPU monitor
         if (CpuMonitor.isSupported()) {
-            cpuMonitor = new CpuMonitor(this);
+            cpuMonitor = new CpuMonitor(applicationContext);
             if (hudFragment != null) hudFragment.setCpuMonitor(cpuMonitor);
         }
 
-        if (videoCallEnabled) {
+        if (videoCallEnabled && activity != null) {
             // Send intent arguments to fragments.
             callFragment.setArguments(intent.getExtras());
             hudFragment.setArguments(intent.getExtras());
             // Activate call and HUD fragments and start the call.
-            FragmentTransaction ft = getFragmentManager().beginTransaction();
+            FragmentTransaction ft = activity.getFragmentManager().beginTransaction();
             ft.add(R.id.call_fragment_container, callFragment);
             ft.add(R.id.hud_fragment_container, hudFragment);
             ft.commit();
@@ -383,6 +400,18 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
         }
     }
 
+    Context getApplicationContext(){
+        return applicationContext;
+    }
+
+    Application getApplication(){
+        return activity.getApplication();
+    }
+
+    Intent getIntent(){
+        return this.intent;
+    }
+
     @TargetApi(17)
     private DisplayMetrics getDisplayMetrics() {
         DisplayMetrics displayMetrics = new DisplayMetrics();
@@ -406,11 +435,10 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
         MediaProjectionManager mediaProjectionManager =
                 (MediaProjectionManager) getApplication().getSystemService(
                         Context.MEDIA_PROJECTION_SERVICE);
-        startActivityForResult(
+        activity.startActivityForResult(
                 mediaProjectionManager.createScreenCaptureIntent(), CAPTURE_PERMISSION_REQUEST_CODE);
     }
 
-    @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode != CAPTURE_PERMISSION_REQUEST_CODE)
             return;
@@ -420,7 +448,7 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
     }
 
     private boolean useCamera2() {
-        return Camera2Enumerator.isSupported(this) && getIntent().getBooleanExtra(EXTRA_CAMERA2, true);
+        return Camera2Enumerator.isSupported(applicationContext) && getIntent().getBooleanExtra(EXTRA_CAMERA2, true);
     }
 
     private boolean captureToTexture() {
@@ -476,9 +504,7 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
     }
 
     // Activity interfaces
-    @Override
     public void onStop() {
-        super.onStop();
         activityRunning = false;
         // Don't stop the video when using screencapture to allow user to show other apps to the remote
         // end.
@@ -490,9 +516,7 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
         }
     }
 
-    @Override
     public void onStart() {
-        super.onStart();
         activityRunning = true;
         // Video is not paused for screencapture. See onPause.
         if (peerConnectionClient != null && !screencaptureEnabled) {
@@ -503,7 +527,6 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
         }
     }
 
-    @Override
     protected void onDestroy() {
         Thread.setDefaultUncaughtExceptionHandler(null);
         disconnect();
@@ -511,7 +534,6 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
             logToast.cancel();
         }
         activityRunning = false;
-        super.onDestroy();
     }
 
     // CallFragment.OnCallEvents interface implementation.
@@ -555,7 +577,7 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
         }
         // Show/hide call control fragment
         callControlFragmentVisible = !callControlFragmentVisible;
-        FragmentTransaction ft = getFragmentManager().beginTransaction();
+        FragmentTransaction ft = activity.getFragmentManager().beginTransaction();
         if (callControlFragmentVisible) {
             ft.show(callFragment);
             ft.show(hudFragment);
@@ -575,7 +597,7 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
         callStartedTimeMs = System.currentTimeMillis();
 
         // Start room connection.
-        logAndToast(getString(R.string.connecting_to, roomConnectionParameters.roomUrl));
+        logAndToast(applicationContext.getString(R.string.connecting_to, roomConnectionParameters.roomUrl));
         appRtcClient.connectToRoom(roomConnectionParameters);
 
         // Create and audio manager that will take care of audio routing,
@@ -646,12 +668,14 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
             audioManager.stop();
             audioManager = null;
         }
-        if (connected && !isError) {
-            setResult(RESULT_OK);
-        } else {
-            setResult(RESULT_CANCELED);
+        if (activity!=null) {
+            if (connected && !isError) {
+                activity.setResult(Activity.RESULT_OK);
+            } else {
+                activity.setResult(Activity.RESULT_CANCELED);
+            }
+            activity.finish();
         }
-        finish();
     }
 
     private void disconnectWithErrorMessage(final String errorMessage) {
@@ -659,31 +683,43 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
             Log.e(TAG, "Critical error: " + errorMessage);
             disconnect();
         } else {
-            new AlertDialog.Builder(this)
-                    .setTitle(getText(R.string.channel_error_title))
-                    .setMessage(errorMessage)
-                    .setCancelable(false)
-                    .setNeutralButton(R.string.ok,
-                            new DialogInterface.OnClickListener() {
-                                @Override
-                                public void onClick(DialogInterface dialog, int id) {
-                                    dialog.cancel();
-                                    disconnect();
-                                }
-                            })
-                    .create()
-                    .show();
+            if (activity != null) {
+                new AlertDialog.Builder(activity)
+                        .setTitle(activity.getText(R.string.channel_error_title))
+                        .setMessage(errorMessage)
+                        .setCancelable(false)
+                        .setNeutralButton(R.string.ok,
+                                new DialogInterface.OnClickListener() {
+                                    @Override
+                                    public void onClick(DialogInterface dialog, int id) {
+                                        dialog.cancel();
+                                        disconnect();
+                                    }
+                                })
+                        .create()
+                        .show();
+            }
         }
     }
 
     // Log |msg| and Toast about it.
     private void logAndToast(String msg) {
         Log.d(TAG, msg);
-        if (logToast != null) {
-            logToast.cancel();
+        if (activity != null) {
+            if (logToast != null) {
+                logToast.cancel();
+            }
+            logToast = Toast.makeText(activity, msg, Toast.LENGTH_SHORT);
+            logToast.show();
         }
-        logToast = Toast.makeText(this, msg, Toast.LENGTH_SHORT);
-        logToast.show();
+    }
+
+    void runOnUiThread(Runnable runnable){
+        if(activity!=null) {
+            activity.runOnUiThread(runnable);
+        } else {
+            handler.post(runnable);
+        }
     }
 
     private void reportError(final String description) {
@@ -712,12 +748,12 @@ public class WebRtcWrapper  extends Activity implements AppRTCClient.SignalingEv
             return createScreenCapturer();
         } else if (useCamera2()) {
             if (!captureToTexture()) {
-                reportError(getString(R.string.camera2_texture_only_error));
+                reportError(applicationContext.getString(R.string.camera2_texture_only_error));
                 return null;
             }
 
             Logging.d(TAG, "Creating capturer using camera2 API.");
-            videoCapturer = createCameraCapturer(new Camera2Enumerator(this));
+            videoCapturer = createCameraCapturer(new Camera2Enumerator(applicationContext));
         } else {
             Logging.d(TAG, "Creating capturer using camera1 API.");
             videoCapturer = createCameraCapturer(new Camera1Enumerator(captureToTexture()));
