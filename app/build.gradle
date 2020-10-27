@@ -30,6 +30,11 @@ android {
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
+    //implementation project(path: ':libwebrtc')
+    implementation 'com.github.NaikSoftware:StompProtocolAndroid:1.6.4'
+    implementation group: 'io.reactivex.rxjava2', name: 'rxandroid', version: '2.1.1'
+    implementation 'com.google.code.gson:gson:2.8.5'
+
 
     compile 'com.android.support:support-annotations:22.2.0'
     implementation 'org.webrtc:google-webrtc:1.0.+'

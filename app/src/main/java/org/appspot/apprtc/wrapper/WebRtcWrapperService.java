@@ -68,6 +68,8 @@ import java.util.Set;
 public class WebRtcWrapperService extends Service  {
     private static final String TAG = "WebRtcService";
     //////////////////////////////////////////////////
+    public static final String ACTION_START = "ACTION_START";
+    public static final String ACTION_STOP = "ACTION_STOP";
 
     private final static String FOREGROUND_CHANNEL_ID = "foreground_channel_id";
     private NotificationManager mNotificationManager;
@@ -98,13 +100,12 @@ public class WebRtcWrapperService extends Service  {
 
         // if user starts the service
         switch (intent.getAction()) {
-            case "ACTION.START_ACTION":
+            case ACTION_START:
                 Log.d(TAG, "Received user starts foreground intent");
                 startForeground(123, prepareNotification());
-                webRtc = new WebRtcWrapper(intent, getApplicationContext(), null);
-                webRtc.onCreate();
+                createNewConnection(intent);
                 break;
-            case "ACTION.STOP_ACTION":
+            case ACTION_STOP:
                 closeConnection();
                 stopForeground(true);
                 stopSelf();
@@ -120,6 +121,14 @@ public class WebRtcWrapperService extends Service  {
     public void onDestroy() {
         closeConnection();
         super.onDestroy();
+    }
+
+    void createNewConnection(Intent intent){
+        if (webRtc != null) {
+            webRtc.onDestroy();
+        }
+        webRtc = new WebRtcWrapper(intent, getApplicationContext(), null);
+        webRtc.onCreate();
     }
 
     void closeConnection(){
@@ -154,8 +163,8 @@ public class WebRtcWrapperService extends Service  {
         PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_UPDATE_CURRENT);
 
         // make a stop intent
-        Intent stopIntent = new Intent(this, ForegroundService.class);
-        stopIntent.setAction("ACTION.STOP_ACTION");
+        Intent stopIntent = new Intent(this, WebRtcWrapperService.class);
+        stopIntent.setAction(ACTION_STOP);
         PendingIntent pendingStopIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT);
 
         RemoteViews remoteViews = new RemoteViews(getPackageName(), R.layout.notification);

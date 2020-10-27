@@ -26,6 +26,8 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.google.gson.Gson;
+
 import org.appspot.apprtc.AppRTCAudioManager;
 import org.appspot.apprtc.AppRTCClient;
 import org.appspot.apprtc.CallFragment;
@@ -182,6 +184,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
 
     // Video enabled
     boolean videoCallEnabled;
+    Gson gson = new Gson();
     Intent intent;
     Context applicationContext;
     Activity activity;
@@ -348,7 +351,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
         // Create connection client. Use DirectRTCClient if room name is an IP otherwise use the
         // standard WebSocketRTCClient.
         if (loopback || !DirectRTCClient.IP_PATTERN.matcher(roomId).matches()) {
-            appRtcClient = new WebSocketRTCClient(this);
+            appRtcClient = new StompWebSocketRTCClient(this);
         } else {
             Log.i(TAG, "Using DirectRTCClient because room name looks like an IP.");
             appRtcClient = new DirectRTCClient(this);
@@ -781,7 +784,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
     // are routed to UI thread.
     private void onConnectedToRoomInternal(final AppRTCClient.SignalingParameters params) {
         final long delta = System.currentTimeMillis() - callStartedTimeMs;
-
+        Log.d(TAG, "Param from server: \n"+gson.toJson(params));
         signalingParameters = params;
         logAndToast("Creating peer connection, delay=" + delta + "ms");
         VideoCapturer videoCapturer = null;
@@ -792,12 +795,14 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
                 localProxyVideoSink, remoteSinks, videoCapturer, signalingParameters);
 
         if (signalingParameters.initiator) {
+            // I am the initiator
             logAndToast("Creating OFFER...");
             // Create offer. Offer SDP will be sent to answering client in
             // PeerConnectionEvents.onLocalDescription event.
             peerConnectionClient.createOffer();
         } else {
             if (params.offerSdp != null) {
+                // Offer sdp in response
                 peerConnectionClient.setRemoteDescription(params.offerSdp);
                 logAndToast("Creating ANSWER...");
                 // Create answer. Answer SDP will be sent to offering client in
