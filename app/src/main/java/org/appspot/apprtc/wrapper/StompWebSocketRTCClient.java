@@ -5,6 +5,8 @@ import android.os.HandlerThread;
 import androidx.annotation.Nullable;
 import android.util.Log;
 
+import com.google.gson.Gson;
+
 import org.appspot.apprtc.AppRTCClient;
 import org.appspot.apprtc.RoomParametersFetcher;
 import org.appspot.apprtc.RoomParametersFetcher.RoomParametersFetcherEvents;
@@ -16,6 +18,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.webrtc.IceCandidate;
 import org.webrtc.SessionDescription;
+
+import java.util.UUID;
 
 /**
  * Negotiates signaling for chatting with https://appr.tc "rooms".
@@ -33,25 +37,43 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
     private static final String ROOM_MESSAGE = "message";
     private static final String ROOM_LEAVE = "leave";
 
-    private enum ConnectionState { NEW, CONNECTED, CLOSED, ERROR }
+    public enum ConnectionState { NEW, CONNECTED, CLOSED, ERROR }
 
     private enum MessageType { MESSAGE, LEAVE }
 
-    private final Handler handler;
+    private final Handler handler; // Local thread for this client
     private boolean initiator;
     private SignalingEvents events;
     private StompWebSocketChannelClient wsClient;
-    private ConnectionState roomState;
+    public ConnectionState roomState;
     private RoomConnectionParameters connectionParameters;
     private String messageUrl;
     private String leaveUrl;
+    private RegisterUser registerUser;
+    private final Gson gson = new Gson();
+    private RoomResponse room;
+    private RoomResponse prevRoom;
+    private OnServerMessage onServerMessage;
 
-    public StompWebSocketRTCClient(SignalingEvents events) {
-        this.events = events;
+    public interface OnServerMessage {
+        void onServerMessage(String msg, int type);
+        void onSocketClosed();
+        void onLeaveRoom();
+        void notifyMessage(String msg);
+    }
+
+    public StompWebSocketRTCClient(OnServerMessage onServerMessage, RegisterUser registerUser) {
+        this.onServerMessage = onServerMessage;
+        //this.events = events;
+        this.registerUser = registerUser;
         roomState = ConnectionState.NEW;
         final HandlerThread handlerThread = new HandlerThread(TAG);
         handlerThread.start();
         handler = new Handler(handlerThread.getLooper());
+    }
+
+    public void setSignalingEvents(SignalingEvents events){
+        this.events = events;
     }
 
     // --------------------------------------------------------------------
@@ -61,6 +83,7 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
     @Override
     public void connectToRoom(RoomConnectionParameters connectionParameters) {
         this.connectionParameters = connectionParameters;
+        if (onServerMessage!=null) onServerMessage.notifyMessage("WebSocket -> Connect to room");
         handler.post(new Runnable() {
             @Override
             public void run() {
@@ -71,6 +94,7 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
 
     @Override
     public void disconnectFromRoom() {
+        if (onServerMessage!=null) onServerMessage.notifyMessage("WebSocket -> Disconnect to room");
         handler.post(new Runnable() {
             @Override
             public void run() {
@@ -82,12 +106,17 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
 
     // Connects to room - function runs on a local looper thread.
     private void connectToRoomInternal() {
-        String connectionUrl = getConnectionUrl(connectionParameters);
-        Log.d(TAG, "Connect to room: " + connectionUrl);
         roomState = ConnectionState.NEW;
-        wsClient = new StompWebSocketChannelClient(handler, this);
+        createWebSocketChannelClient();
 
-        RoomParametersFetcherEvents callbacks = new RoomParametersFetcherEvents() {
+        // Fire connection and signaling parameters events.
+        // events.onConnectedToRoom(signalingParameters);
+
+        // Connect and register WebSocket client.
+        wsClient.connect(this.connectionParameters.roomUrl, null, registerUser.signature);
+        roomState = ConnectionState.CONNECTED;
+        wsClient.register(null, null, registerUser);
+        /*RoomParametersFetcherEvents callbacks = new RoomParametersFetcherEvents() {
             @Override
             public void onSignalingParametersReady(final SignalingParameters params) {
                 StompWebSocketRTCClient.this.handler.post(new Runnable() {
@@ -101,10 +130,22 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
             @Override
             public void onSignalingParametersError(String description) {
                 StompWebSocketRTCClient.this.reportError(description);
+                onServerMessage.onSocketClosed();
             }
         };
 
-        new RoomParametersFetcher(/*connectionUrl*/ "http://192.168.70.11:8080/signalingParam", null, callbacks).makeRequest();
+        new RoomParametersFetcher(*//*connectionUrl*//* "http://192.168.6.105:8080/signalingParam", null, callbacks).makeRequest();*/
+    }
+
+    private void createWebSocketChannelClient(){
+        if (wsClient==null || wsClient.getState()==WebSocketConnectionState.CLOSED) {
+            wsClient = new StompWebSocketChannelClient(handler, this);
+        } else if (wsClient.getState()==WebSocketConnectionState.ERROR) {
+            wsClient.disconnect(true);
+            wsClient = new StompWebSocketChannelClient(handler, this);
+        } else {
+            // no need to create new client
+        }
     }
 
     // Disconnect from room and send bye messages - runs on a local looper thread.
@@ -117,6 +158,7 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
         roomState = ConnectionState.CLOSED;
         if (wsClient != null) {
             wsClient.disconnect(true);
+            wsClient = null;
         }
     }
 
@@ -148,55 +190,67 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
 
     // Callback issued when room parameters are extracted. Runs on local
     // looper thread.
-    private void signalingParametersReady(final SignalingParameters signalingParameters) {
+    /*private void signalingParametersReady(final SignalingParameters signalingParameters) {
         Log.d(TAG, "Room connection completed.");
         if (connectionParameters.loopback
-                && (!signalingParameters.initiator || signalingParameters.offerSdp != null)) {
+                && (*//*!signalingParameters.room.isInitiator ||*//* signalingParameters.offerSdp != null)) {
             reportError("Loopback room is busy.");
             return;
         }
-        if (!connectionParameters.loopback && !signalingParameters.initiator
+        if (!connectionParameters.loopback *//*&& !signalingParameters.room.isInitiator*//*
                 && signalingParameters.offerSdp == null) {
             Log.w(TAG, "No offer SDP in room response.");
         }
-        initiator = signalingParameters.initiator;
+        //initiator = signalingParameters.room.isInitiator;
         // Use to send offer, ice candidate to server via post
-        messageUrl = getMessageUrl(connectionParameters, signalingParameters); // https://appr.tc/message/375970/84454575
+        // messageUrl = getMessageUrl(connectionParameters, signalingParameters); // https://appr.tc/message/375970/84454575
         // Use to send leave message
-        leaveUrl = getLeaveUrl(connectionParameters, signalingParameters); // https://appr.tc/leave/375970/84454575
-        Log.d(TAG, "Message URL: " + messageUrl);
-        Log.d(TAG, "Leave URL: " + leaveUrl);
+        // leaveUrl = getLeaveUrl(connectionParameters, signalingParameters); // https://appr.tc/leave/375970/84454575
+        // Log.d(TAG, "Message URL: " + messageUrl);
+        // Log.d(TAG, "Leave URL: " + leaveUrl);
         roomState = ConnectionState.CONNECTED;
 
         // Fire connection and signaling parameters events.
-        events.onConnectedToRoom(signalingParameters);
+        // events.onConnectedToRoom(signalingParameters);
 
         // Connect and register WebSocket client.
-        wsClient.connect(signalingParameters.wssUrl /*"ws://192.168.70.14:8080/ws/websocket"*/, signalingParameters.wssPostUrl, signalingParameters.clientId);
-        wsClient.register(connectionParameters.roomId, signalingParameters.clientId);
+        wsClient.connect(signalingParameters.wssUrl *//*"ws://192.168.70.14:8080/ws/websocket"*//*, signalingParameters.wssPostUrl, registerUser.signature);
+        wsClient.register(connectionParameters.roomId, signalingParameters.clientId, registerUser);
+    }*/
+
+    public void sendRandomChatRequest(final RandomChatReq req){
+        handler.post(() -> wsClient.send(gson.toJson(req), StompWebSocketChannelClient.RANDOM_CHAT_URL));
+    }
+
+    public void sendLeaveRoomMessage(){
+        handler.post(() -> wsClient.send("{}", StompWebSocketChannelClient.LEAVE_ROOM_URL));
+        if (room!=null) {
+            prevRoom = room;
+            room = null;
+        }
     }
 
     // Send local offer SDP to the other participant.
     @Override
     public void sendOfferSdp(final SessionDescription sdp) {
         Log.d(TAG, "SEND OFFER SDP: "+sdp.description);
-        handler.post(new Runnable() {
-            @Override
-            public void run() {
-                if (roomState != ConnectionState.CONNECTED) {
-                    reportError("Sending offer SDP in non connected state.");
-                    return;
-                }
-                JSONObject json = new JSONObject();
-                jsonPut(json, "sdp", sdp.description);
-                jsonPut(json, "type", "offer");
-                sendPostMessage(MessageType.MESSAGE, messageUrl, json.toString());
-                if (connectionParameters.loopback) {
-                    // In loopback mode rename this offer to answer and route it back.
-                    SessionDescription sdpAnswer = new SessionDescription(
-                            SessionDescription.Type.fromCanonicalForm("answer"), sdp.description);
+        if (onServerMessage!=null) onServerMessage.notifyMessage("WebSocket -> Send Offer Sdp");
+        handler.post(() -> {
+            if (roomState != ConnectionState.CONNECTED) {
+                reportError("Sending offer SDP in non connected state.");
+                return;
+            }
+            JSONObject json = new JSONObject();
+            jsonPut(json, "sdp", sdp.description);
+            jsonPut(json, "type", "offer");
+            //sendPostMessage(MessageType.MESSAGE, messageUrl, json.toString());
+            sendMessageToPartner(json.toString());
+            if (connectionParameters.loopback) {
+                // In loopback mode rename this offer to answer and route it back.
+                SessionDescription sdpAnswer = new SessionDescription(
+                        SessionDescription.Type.fromCanonicalForm("answer"), sdp.description);
+                if (events!=null)
                     events.onRemoteDescription(sdpAnswer);
-                }
             }
         });
     }
@@ -205,6 +259,7 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
     @Override
     public void sendAnswerSdp(final SessionDescription sdp) {
         Log.d(TAG, "SEND ANSWER SDP: "+sdp.description);
+        if (onServerMessage!=null) onServerMessage.notifyMessage("WebSocket -> Send Answer Sdp");
         handler.post(new Runnable() {
             @Override
             public void run() {
@@ -215,7 +270,8 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
                 JSONObject json = new JSONObject();
                 jsonPut(json, "sdp", sdp.description);
                 jsonPut(json, "type", "answer");
-                wsClient.send(json.toString());
+                //wsClient.send(json.toString());
+                sendMessageToPartner(json.toString());
             }
         });
     }
@@ -238,13 +294,16 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
                         reportError("Sending ICE candidate in non connected state.");
                         return;
                     }
-                    sendPostMessage(MessageType.MESSAGE, messageUrl, json.toString());
+                    //sendPostMessage(MessageType.MESSAGE, messageUrl, json.toString());
+                    sendMessageToPartner(json.toString());
                     if (connectionParameters.loopback) {
-                        events.onRemoteIceCandidate(candidate);
+                        if (events!=null)
+                            events.onRemoteIceCandidate(candidate);
                     }
                 } else {
                     // Call receiver sends ice candidates to websocket server.
-                    wsClient.send(json.toString());
+                    //wsClient.send(json.toString());
+                    sendMessageToPartner(json.toString());
                 }
             }
         });
@@ -270,13 +329,16 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
                         reportError("Sending ICE candidate removals in non connected state.");
                         return;
                     }
-                    sendPostMessage(MessageType.MESSAGE, messageUrl, json.toString());
+                    //sendPostMessage(MessageType.MESSAGE, messageUrl, json.toString());
+                    sendMessageToPartner(json.toString());
                     if (connectionParameters.loopback) {
-                        events.onRemoteIceCandidatesRemoved(candidates);
+                        if (events!=null)
+                            events.onRemoteIceCandidatesRemoved(candidates);
                     }
                 } else {
                     // Call receiver sends ice candidates to websocket server.
-                    wsClient.send(json.toString());
+                    //wsClient.send(json.toString());
+                    sendMessageToPartner(json.toString());
                 }
             }
         });
@@ -295,25 +357,73 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
         }
         try {
             JSONObject json = new JSONObject(msg);
+            int responseType = json.getInt("type");
+            if (onServerMessage!=null) {
+                onServerMessage.onServerMessage(msg, responseType);
+            }
+            switch (responseType) {
+                case BaseResponse.TYPE_CREATE_USER:
+                    if (onServerMessage!=null) onServerMessage.notifyMessage("Server TYPE_CREATE_USER");
+                    break;
+                case BaseResponse.TYPE_LEAVE_ROOM:
+                    RoomResponse leaveRoom = gson.fromJson(msg, RoomResponse.class);
+                    if(room!=null && leaveRoom.roomId.equals(room.roomId)) {
+                        if (onServerMessage!=null) onServerMessage.notifyMessage("Server LEAVE_ROOM ID = "+room.roomId);
+                        if(onServerMessage!=null) onServerMessage.onLeaveRoom();
+                    } else {
+                        if (onServerMessage!=null) onServerMessage.notifyMessage("Server REJECT LEAVE_ROOM ID = "+leaveRoom.roomId);
+                    }
+                    return;
+                case BaseResponse.TYPE_REGISTER_USR:
+                    if (onServerMessage!=null) onServerMessage.notifyMessage("REGISTER USER");
+                    return;
+                case BaseResponse.TYPE_ROOM_CHAT:
+                    RoomResponse roomResponse = gson.fromJson(msg, RoomResponse.class);
+                    if (roomResponse.isSuccess()) {
+                        // check
+                        this.room = roomResponse;
+                        this.initiator = room.isInitiator;
+                        SignalingParameters param = new SignalingParameters();
+                        param.room = room;
+                        if (this.events!=null) {
+                            this.events.onConnectedToRoom(param);
+                        }
+                        if (onServerMessage!=null) onServerMessage.notifyMessage("Server ROOM_CHAT ID = "+room.roomId);
+                    } else {
+                        if (onServerMessage!=null) onServerMessage.notifyMessage("Server ROOM_CHAT ERROR = "+roomResponse.code);
+                        Log.e(TAG, "Error Code: " + roomResponse.code);
+                    }
+                    return;
+                case BaseResponse.TYPE_SIGNAL_MSG:
+                    break;
+            }
             String msgText = json.getString("msg");
             String errorText = json.optString("error");
+            //
+            String toSID = json.getString("toSID");
+            String fromSID = json.getString("fromSID");
+            String roomID = json.getString("roomID");
+
             if (msgText.length() > 0) {
                 json = new JSONObject(msgText);
                 String type = json.optString("type");
                 if (type.equals("candidate")) {
-                    events.onRemoteIceCandidate(toJavaCandidate(json));
+                    if (events!=null)
+                        events.onRemoteIceCandidate(toJavaCandidate(json));
                 } else if (type.equals("remove-candidates")) {
                     JSONArray candidateArray = json.getJSONArray("candidates");
                     IceCandidate[] candidates = new IceCandidate[candidateArray.length()];
                     for (int i = 0; i < candidateArray.length(); ++i) {
                         candidates[i] = toJavaCandidate(candidateArray.getJSONObject(i));
                     }
-                    events.onRemoteIceCandidatesRemoved(candidates);
+                    if (events!=null)
+                        events.onRemoteIceCandidatesRemoved(candidates);
                 } else if (type.equals("answer")) {
                     if (initiator) {
                         SessionDescription sdp = new SessionDescription(
                                 SessionDescription.Type.fromCanonicalForm(type), json.getString("sdp"));
-                        events.onRemoteDescription(sdp);
+                        if (events!=null)
+                            events.onRemoteDescription(sdp);
                     } else {
                         reportError("Received answer for call initiator: " + msg);
                     }
@@ -321,12 +431,14 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
                     if (!initiator) {
                         SessionDescription sdp = new SessionDescription(
                                 SessionDescription.Type.fromCanonicalForm(type), json.getString("sdp"));
-                        events.onRemoteDescription(sdp);
+                        if (events!=null)
+                            events.onRemoteDescription(sdp);
                     } else {
                         reportError("Received offer for call receiver: " + msg);
                     }
                 } else if (type.equals("bye")) {
-                    events.onChannelClose();
+                    if (events!=null)
+                        events.onChannelClose();
                 } else {
                     reportError("Unexpected WebSocket message: " + msg);
                 }
@@ -345,7 +457,13 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
     @Override
     public void onWebSocketClose() {
         Log.d(TAG, "ON WEB SOCKET CLOSED");
-        events.onChannelClose();
+        if (onServerMessage!=null) onServerMessage.notifyMessage("ON WEB SOCKET CLOSED");
+        if (events!=null)
+            events.onChannelClose();
+        roomState = ConnectionState.CLOSED;
+        if (onServerMessage!=null) onServerMessage.onSocketClosed();
+        wsClient = null;
+        events = null;
     }
 
     @Override
@@ -358,12 +476,15 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
     // Helper functions.
     private void reportError(final String errorMessage) {
         Log.e(TAG, errorMessage);
+        if (onServerMessage!=null) onServerMessage.notifyMessage("REPORT ERROR: "+errorMessage);
         handler.post(new Runnable() {
             @Override
             public void run() {
                 if (roomState != ConnectionState.ERROR) {
                     roomState = ConnectionState.ERROR;
-                    events.onChannelError(errorMessage);
+                    if (events!=null)
+                        events.onChannelError(errorMessage);
+                    events = null;
                 }
             }
         });
@@ -386,7 +507,7 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
             logInfo += ". Message: " + message;
         }
         Log.d(TAG, "SEND POST MESSAGE: " + logInfo);
-        AsyncHttpURLConnection httpConnection =
+        /*AsyncHttpURLConnection httpConnection =
                 new AsyncHttpURLConnection("POST", url, message, new AsyncHttpEvents() {
                     @Override
                     public void onHttpError(String errorMessage) {
@@ -408,7 +529,18 @@ public class StompWebSocketRTCClient implements AppRTCClient, StompWebSocketChan
                         }
                     }
                 });
-        httpConnection.send();
+        httpConnection.send();*/
+    }
+
+    private void sendMessageToPartner(final String message){
+        JSONObject json = new JSONObject();
+
+        jsonPut(json, "cmd", "send");
+        jsonPut(json, "msg", message);
+        jsonPut(json, "toSID", room.partnerSID);
+        jsonPut(json, "roomID", room.roomId);
+
+        wsClient.send(json.toString());
     }
 
     // Converts a Java candidate to a JSONObject.

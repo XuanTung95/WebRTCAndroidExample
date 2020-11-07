@@ -60,6 +60,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
         PeerConnectionClient.PeerConnectionEvents,
@@ -163,7 +164,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
     private Toast logToast;
     private boolean commandLineRun;
     private boolean activityRunning;
-    private AppRTCClient.RoomConnectionParameters roomConnectionParameters;
+    //private AppRTCClient.RoomConnectionParameters roomConnectionParameters;
     @Nullable
     private PeerConnectionClient.PeerConnectionParameters peerConnectionParameters;
     private boolean connected;
@@ -188,13 +189,19 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
     Intent intent;
     Context applicationContext;
     Activity activity;
-    Handler handler;
+    Handler handler; // my looper
+    RoomResponse room;
+    StompWebSocketRTCClient.OnServerMessage onServerMessage;
 
     public WebRtcWrapper(@NonNull Intent intent, @NonNull Context applicationContext, @Nullable Activity activity) {
         this.intent = intent;
         this.applicationContext = applicationContext;
         this.activity = activity;
         this.handler = new Handler(Looper.myLooper());
+    }
+
+    public void setOnServerMessage(StompWebSocketRTCClient.OnServerMessage onServerMessage){
+        this.onServerMessage = onServerMessage;
     }
 
     // TODO(bugs.webrtc.org/8580): LayoutParams.FLAG_TURN_SCREEN_ON and
@@ -351,15 +358,15 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
         // Create connection client. Use DirectRTCClient if room name is an IP otherwise use the
         // standard WebSocketRTCClient.
         if (loopback || !DirectRTCClient.IP_PATTERN.matcher(roomId).matches()) {
-            appRtcClient = new StompWebSocketRTCClient(this);
+            //appRtcClient = new StompWebSocketRTCClient(this, registerUser);
         } else {
             Log.i(TAG, "Using DirectRTCClient because room name looks like an IP.");
-            appRtcClient = new DirectRTCClient(this);
+            //appRtcClient = new DirectRTCClient(this);
         }
         // Create connection parameters.
-        String urlParameters = intent.getStringExtra(EXTRA_URLPARAMETERS);
+        /*String urlParameters = intent.getStringExtra(EXTRA_URLPARAMETERS);
         roomConnectionParameters =
-                new AppRTCClient.RoomConnectionParameters(roomUri.toString(), roomId, loopback, urlParameters);
+                new AppRTCClient.RoomConnectionParameters(roomUri.toString(), roomId, loopback, urlParameters);*/
 
         // Create CPU monitor
         if (CpuMonitor.isSupported()) {
@@ -397,10 +404,42 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
         peerConnectionClient.createPeerConnectionFactory(options);
 
         if (screencaptureEnabled) {
-            startScreenCapture();
+            //startScreenCapture();
         } else {
-            startCall();
+            //startCall();
         }
+    }
+
+    public void setupWithAppRTCClient(AppRTCClient appRTCClient){
+        this.appRtcClient = appRTCClient;
+    }
+
+    public void startCall() {
+        if (appRtcClient == null) {
+            Log.e(TAG, "AppRTC client is not allocated for a call.");
+            return;
+        }
+        callStartedTimeMs = System.currentTimeMillis();
+
+        // Start room connection.
+        /*logAndToast(applicationContext.getString(R.string.connecting_to, roomConnectionParameters.roomUrl));
+        appRtcClient.connectToRoom(roomConnectionParameters);*/
+
+        // Create and audio manager that will take care of audio routing,
+        // audio modes, audio device enumeration etc.
+        audioManager = AppRTCAudioManager.create(getApplicationContext());
+        // Store existing audio settings and change audio mode to
+        // MODE_IN_COMMUNICATION for best possible VoIP performance.
+        Log.d(TAG, "Starting the audio manager...");
+        audioManager.start(new AppRTCAudioManager.AudioManagerEvents() {
+            // This method will be called each time the number of available audio
+            // devices has changed.
+            @Override
+            public void onAudioDeviceChanged(
+                    AppRTCAudioManager.AudioDevice audioDevice, Set<AppRTCAudioManager.AudioDevice> availableAudioDevices) {
+                onAudioManagerDevicesChanged(audioDevice, availableAudioDevices);
+            }
+        });
     }
 
     Context getApplicationContext(){
@@ -592,34 +631,6 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
         ft.commit();
     }
 
-    private void startCall() {
-        if (appRtcClient == null) {
-            Log.e(TAG, "AppRTC client is not allocated for a call.");
-            return;
-        }
-        callStartedTimeMs = System.currentTimeMillis();
-
-        // Start room connection.
-        logAndToast(applicationContext.getString(R.string.connecting_to, roomConnectionParameters.roomUrl));
-        appRtcClient.connectToRoom(roomConnectionParameters);
-
-        // Create and audio manager that will take care of audio routing,
-        // audio modes, audio device enumeration etc.
-        audioManager = AppRTCAudioManager.create(getApplicationContext());
-        // Store existing audio settings and change audio mode to
-        // MODE_IN_COMMUNICATION for best possible VoIP performance.
-        Log.d(TAG, "Starting the audio manager...");
-        audioManager.start(new AppRTCAudioManager.AudioManagerEvents() {
-            // This method will be called each time the number of available audio
-            // devices has changed.
-            @Override
-            public void onAudioDeviceChanged(
-                    AppRTCAudioManager.AudioDevice audioDevice, Set<AppRTCAudioManager.AudioDevice> availableAudioDevices) {
-                onAudioManagerDevicesChanged(audioDevice, availableAudioDevices);
-            }
-        });
-    }
-
     // Should be called from UI thread
     private void callConnected() {
         final long delta = System.currentTimeMillis() - callStartedTimeMs;
@@ -648,7 +659,8 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
         if (remoteProxyRenderer != null) remoteProxyRenderer.setTarget(null);
         if (localProxyVideoSink != null) localProxyVideoSink.setTarget(null);
         if (appRtcClient != null) {
-            appRtcClient.disconnectFromRoom();
+            // Now appRtcClient is handled outside
+            // appRtcClient.disconnectFromRoom();
             appRtcClient = null;
         }
         if (pipRenderer != null) {
@@ -785,41 +797,52 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
     private void onConnectedToRoomInternal(final AppRTCClient.SignalingParameters params) {
         final long delta = System.currentTimeMillis() - callStartedTimeMs;
         Log.d(TAG, "Param from server: \n"+gson.toJson(params));
-        signalingParameters = params;
-        logAndToast("Creating peer connection, delay=" + delta + "ms");
-        VideoCapturer videoCapturer = null;
-        if (peerConnectionParameters.videoCallEnabled) {
-            videoCapturer = createVideoCapturer();
-        }
-        peerConnectionClient.createPeerConnection(
-                localProxyVideoSink, remoteSinks, videoCapturer, signalingParameters);
-
-        if (signalingParameters.initiator) {
-            // I am the initiator
-            logAndToast("Creating OFFER...");
-            // Create offer. Offer SDP will be sent to answering client in
-            // PeerConnectionEvents.onLocalDescription event.
-            peerConnectionClient.createOffer();
-        } else {
-            if (params.offerSdp != null) {
-                // Offer sdp in response
-                peerConnectionClient.setRemoteDescription(params.offerSdp);
-                logAndToast("Creating ANSWER...");
-                // Create answer. Answer SDP will be sent to offering client in
+        if (params.room!=null) {
+            room = params.room;
+            if (room.isInitiator) {
+                // I am the initiator
+                logAndToast("Creating OFFER...");
+                // Create offer. Offer SDP will be sent to answering client in
                 // PeerConnectionEvents.onLocalDescription event.
-                peerConnectionClient.createAnswer();
-            }
-            if (params.iceCandidates != null) {
-                // Add remote ICE candidates from room.
-                for (IceCandidate iceCandidate : params.iceCandidates) {
-                    peerConnectionClient.addRemoteIceCandidate(iceCandidate);
+                peerConnectionClient.createOffer();
+            } else {
+                if (params.offerSdp != null) {
+                    // Offer sdp in response
+                    peerConnectionClient.setRemoteDescription(params.offerSdp);
+                    logAndToast("Creating ANSWER...");
+                    // Create answer. Answer SDP will be sent to offering client in
+                    // PeerConnectionEvents.onLocalDescription event.
+                    peerConnectionClient.createAnswer();
+                }
+                if (params.iceCandidates != null) {
+                    // Add remote ICE candidates from room.
+                    for (IceCandidate iceCandidate : params.iceCandidates) {
+                        peerConnectionClient.addRemoteIceCandidate(iceCandidate);
+                    }
                 }
             }
         }
     }
 
+    public void createPeerConnectionClient(final AppRTCClient.SignalingParameters params){
+        messageNotification("createPeerConnectionClient");
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                signalingParameters = params;
+                VideoCapturer videoCapturer = null;
+                if (peerConnectionParameters.videoCallEnabled) {
+                    videoCapturer = createVideoCapturer();
+                }
+                peerConnectionClient.createPeerConnection(
+                        localProxyVideoSink, remoteSinks, videoCapturer, signalingParameters);
+            }
+        });
+    }
+
     @Override
     public void onConnectedToRoom(final AppRTCClient.SignalingParameters params) {
+        messageNotification("onConnectedToRoom");
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -840,7 +863,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
                 }
                 logAndToast("Received remote " + desc.type + ", delay=" + delta + "ms");
                 peerConnectionClient.setRemoteDescription(desc);
-                if (!signalingParameters.initiator) {
+                if (!room.isInitiator) {
                     logAndToast("Creating ANSWER...");
                     // Create answer. Answer SDP will be sent to offering client in
                     // PeerConnectionEvents.onLocalDescription event.
@@ -880,6 +903,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
 
     @Override
     public void onChannelClose() {
+        messageNotification("onChannelClose ");
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -891,6 +915,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
 
     @Override
     public void onChannelError(final String description) {
+        messageNotification("onChannelError "+description);
         reportError(description);
     }
 
@@ -906,7 +931,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
             public void run() {
                 if (appRtcClient != null) {
                     logAndToast("Sending " + desc.type + ", delay=" + delta + "ms");
-                    if (signalingParameters.initiator) {
+                    if (room.isInitiator) {
                         appRtcClient.sendOfferSdp(desc);
                     } else {
                         appRtcClient.sendAnswerSdp(desc);
@@ -946,6 +971,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
 
     @Override
     public void onIceConnected() {
+        messageNotification("onIceConnected");
         final long delta = System.currentTimeMillis() - callStartedTimeMs;
         runOnUiThread(new Runnable() {
             @Override
@@ -957,6 +983,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
 
     @Override
     public void onIceDisconnected() {
+        messageNotification("onIceDisconnected");
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -967,6 +994,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
 
     @Override
     public void onConnected() {
+        messageNotification("onPeerConnection Connected");
         final long delta = System.currentTimeMillis() - callStartedTimeMs;
         runOnUiThread(new Runnable() {
             @Override
@@ -980,6 +1008,7 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
 
     @Override
     public void onDisconnected() {
+        messageNotification("onPeerConnectionDisconnected");
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -991,7 +1020,9 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
     }
 
     @Override
-    public void onPeerConnectionClosed() {}
+    public void onPeerConnectionClosed() {
+        messageNotification("onPeerConnectionClosed");
+    }
 
     @Override
     public void onPeerConnectionStatsReady(final StatsReport[] reports) {
@@ -1007,6 +1038,14 @@ public class WebRtcWrapper implements AppRTCClient.SignalingEvents,
 
     @Override
     public void onPeerConnectionError(final String description) {
+        messageNotification("PeerConnectionError:" +description);
         reportError(description);
+    }
+
+    int id = (int) (Math.random() * 1000);
+    private void messageNotification(String msg){
+        if(onServerMessage!=null) {
+            onServerMessage.notifyMessage("[["+id+"]] "+msg);
+        }
     }
 }

@@ -34,12 +34,16 @@ import android.view.inputmethod.EditorInfo;
 import android.webkit.URLUtil;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ListView;
 import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.Random;
+
+import org.appspot.apprtc.wrapper.TestWebsocketActivity;
+import org.appspot.apprtc.wrapper.WebRtcWrapperService;
 import org.json.JSONArray;
 import org.json.JSONException;
 
@@ -88,6 +92,35 @@ public class ConnectActivity extends Activity {
 
     setContentView(R.layout.activity_connect);
 
+    Button testBtn = findViewById(R.id.testBtn);
+    testBtn.setOnClickListener(new OnClickListener() {
+      @Override
+      public void onClick(View v) {
+        Intent intent = new Intent(ConnectActivity.this, WebRtcWrapperService.class);
+        startService(intent);
+      }
+    });
+
+    Button randomChat = findViewById(R.id.randomChat);
+    randomChat.setOnClickListener(new OnClickListener() {
+      @Override
+      public void onClick(View v) {
+        Intent intent = new Intent(ConnectActivity.this, WebRtcWrapperService.class);
+        intent.setAction(WebRtcWrapperService.ACTION_REQUEST_RANDOM_CHAT);
+        startService(intent);
+      }
+    });
+
+    Button leaveRoom = findViewById(R.id.leaveRoom);
+    leaveRoom.setOnClickListener(new OnClickListener() {
+      @Override
+      public void onClick(View v) {
+        Intent intent = new Intent(ConnectActivity.this, WebRtcWrapperService.class);
+        intent.setAction(WebRtcWrapperService.ACTION_LEAVE_ROOM);
+        startService(intent);
+      }
+    });
+
     roomEditText = findViewById(R.id.room_edittext);
     roomEditText.setOnEditorActionListener(new TextView.OnEditorActionListener() {
       @Override
@@ -111,6 +144,14 @@ public class ConnectActivity extends Activity {
     addFavoriteButton.setOnClickListener(addFavoriteListener);
 
     requestPermissions();
+  }
+
+  @Override
+  protected void onDestroy() {
+    Intent intent = new Intent(this, WebRtcWrapperService.class);
+    intent.setAction(WebRtcWrapperService.ACTION_STOP);
+    stopService(intent);
+    super.onDestroy();
   }
 
   @Override
@@ -544,7 +585,10 @@ public class ConnectActivity extends Activity {
     Log.d(TAG, "Connecting to room " + roomId + " at URL " + roomUrl);
     if (validateUrl(roomUrl)) {
       Uri uri = Uri.parse(roomUrl);
-      Intent intent = new Intent(this, CallActivity.class);
+      //Intent intent = new Intent(this, CallActivity.class);
+      //Intent intent = new Intent(this, WebRtcWrapper.class);
+      Intent intent = new Intent(this, WebRtcWrapperService.class);
+      //Intent intent = new Intent(this, TestActivity.class);
       intent.setData(uri);
       intent.putExtra(CallActivity.EXTRA_ROOMID, roomId);
       intent.putExtra(CallActivity.EXTRA_LOOPBACK, loopback);
@@ -612,7 +656,10 @@ public class ConnectActivity extends Activity {
         }
       }
 
-      startActivityForResult(intent, CONNECTION_REQUEST);
+      //startActivityForResult(intent, CONNECTION_REQUEST);
+
+      intent.setAction(WebRtcWrapperService.ACTION_START);
+      startService(intent);
     }
   }
 

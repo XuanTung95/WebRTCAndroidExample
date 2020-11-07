@@ -10,6 +10,7 @@
 
 package org.appspot.apprtc;
 
+import org.appspot.apprtc.wrapper.RoomResponse;
 import org.webrtc.IceCandidate;
 import org.webrtc.PeerConnection;
 import org.webrtc.SessionDescription;
@@ -76,13 +77,17 @@ public interface AppRTCClient {
    * Struct holding the signaling parameters of an AppRTC room.
    */
   class SignalingParameters {
-    public final List<PeerConnection.IceServer> iceServers;
-    public final boolean initiator;
-    public final String clientId;
-    public final String wssUrl;
-    public final String wssPostUrl;
-    public final SessionDescription offerSdp;
-    public final List<IceCandidate> iceCandidates;
+    public List<PeerConnection.IceServer> iceServers;
+    public boolean initiator; // not use
+    public String clientId;
+    public String wssUrl;
+    public String wssPostUrl;
+    public SessionDescription offerSdp;
+    public List<IceCandidate> iceCandidates;
+    public RoomResponse room;
+
+    public SignalingParameters(){
+    }
 
     public SignalingParameters(List<PeerConnection.IceServer> iceServers, boolean initiator,
         String clientId, String wssUrl, String wssPostUrl, SessionDescription offerSdp,

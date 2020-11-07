@@ -376,6 +376,7 @@ public class PeerConnectionClient {
         createMediaConstraintsInternal();
         createPeerConnectionInternal();
         maybeCreateAndStartRtcEventLog();
+        Log.i(TAG, "Created peer connection!");
       } catch (Exception e) {
         reportError("Failed to create peer connection: " + e.getMessage());
         throw e;

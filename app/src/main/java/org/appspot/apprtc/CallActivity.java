@@ -148,8 +148,8 @@ public class CallActivity extends Activity implements AppRTCClient.SignalingEven
     }
   }
 
-  private final ProxyVideoSink remoteProxyRenderer = new ProxyVideoSink();
-  private final ProxyVideoSink localProxyVideoSink = new ProxyVideoSink();
+  private ProxyVideoSink remoteProxyRenderer;
+  private ProxyVideoSink localProxyVideoSink;
   @Nullable private PeerConnectionClient peerConnectionClient;
   @Nullable
   private AppRTCClient appRtcClient;
@@ -185,12 +185,19 @@ public class CallActivity extends Activity implements AppRTCClient.SignalingEven
   private HudFragment hudFragment;
   private CpuMonitor cpuMonitor;
 
+  // Video enabled
+  boolean videoCallEnabled;
+
   @Override
   // TODO(bugs.webrtc.org/8580): LayoutParams.FLAG_TURN_SCREEN_ON and
   // LayoutParams.FLAG_SHOW_WHEN_LOCKED are deprecated.
   @SuppressWarnings("deprecation")
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    final EglBase eglBase = EglBase.create();
+    final Intent intent = getIntent();
+    videoCallEnabled = intent.getBooleanExtra(EXTRA_VIDEO_CALL, false);
+
     Thread.setDefaultUncaughtExceptionHandler(new UnhandledExceptionHandler(this));
 
     // Set window styles for fullscreen-window size. Needs to be done before
@@ -205,60 +212,59 @@ public class CallActivity extends Activity implements AppRTCClient.SignalingEven
     signalingParameters = null;
 
     // Create UI controls.
-    pipRenderer = findViewById(R.id.pip_video_view);
-    fullscreenRenderer = findViewById(R.id.fullscreen_video_view);
-    callFragment = new CallFragment();
-    hudFragment = new HudFragment();
+    if (videoCallEnabled) {
+      remoteProxyRenderer = new ProxyVideoSink();
+      localProxyVideoSink = new ProxyVideoSink();
+      pipRenderer = findViewById(R.id.pip_video_view);
+      fullscreenRenderer = findViewById(R.id.fullscreen_video_view);
+      callFragment = new CallFragment();
+      hudFragment = new HudFragment();
+      // Show/hide call control fragment on view click.
+      View.OnClickListener listener = new View.OnClickListener() {
+        @Override
+        public void onClick(View view) {
+          toggleCallControlFragmentVisibility();
+        }
+      };
 
-    // Show/hide call control fragment on view click.
-    View.OnClickListener listener = new View.OnClickListener() {
-      @Override
-      public void onClick(View view) {
-        toggleCallControlFragmentVisibility();
+      // Swap feeds on pip view click.
+      pipRenderer.setOnClickListener(new View.OnClickListener() {
+        @Override
+        public void onClick(View view) {
+          setSwappedFeeds(!isSwappedFeeds);
+        }
+      });
+
+      fullscreenRenderer.setOnClickListener(listener);
+      remoteSinks.add(remoteProxyRenderer);
+
+      // Create video renderers.
+      pipRenderer.init(eglBase.getEglBaseContext(), null);
+      pipRenderer.setScalingType(ScalingType.SCALE_ASPECT_FIT);
+      String saveRemoteVideoToFile = intent.getStringExtra(EXTRA_SAVE_REMOTE_VIDEO_TO_FILE);
+
+      // When saveRemoteVideoToFile is set we save the video from the remote to a file.
+      if (saveRemoteVideoToFile != null) {
+        int videoOutWidth = intent.getIntExtra(EXTRA_SAVE_REMOTE_VIDEO_TO_FILE_WIDTH, 0);
+        int videoOutHeight = intent.getIntExtra(EXTRA_SAVE_REMOTE_VIDEO_TO_FILE_HEIGHT, 0);
+        try {
+          videoFileRenderer = new VideoFileRenderer(
+              saveRemoteVideoToFile, videoOutWidth, videoOutHeight, eglBase.getEglBaseContext());
+          remoteSinks.add(videoFileRenderer);
+        } catch (IOException e) {
+          throw new RuntimeException(
+              "Failed to open video file for output: " + saveRemoteVideoToFile, e);
+        }
       }
-    };
+      fullscreenRenderer.init(eglBase.getEglBaseContext(), null);
+      fullscreenRenderer.setScalingType(ScalingType.SCALE_ASPECT_FILL);
 
-    // Swap feeds on pip view click.
-    pipRenderer.setOnClickListener(new View.OnClickListener() {
-      @Override
-      public void onClick(View view) {
-        setSwappedFeeds(!isSwappedFeeds);
-      }
-    });
-
-    fullscreenRenderer.setOnClickListener(listener);
-    remoteSinks.add(remoteProxyRenderer);
-
-    final Intent intent = getIntent();
-    final EglBase eglBase = EglBase.create();
-
-    // Create video renderers.
-    pipRenderer.init(eglBase.getEglBaseContext(), null);
-    pipRenderer.setScalingType(ScalingType.SCALE_ASPECT_FIT);
-    String saveRemoteVideoToFile = intent.getStringExtra(EXTRA_SAVE_REMOTE_VIDEO_TO_FILE);
-
-    // When saveRemoteVideoToFile is set we save the video from the remote to a file.
-    if (saveRemoteVideoToFile != null) {
-      int videoOutWidth = intent.getIntExtra(EXTRA_SAVE_REMOTE_VIDEO_TO_FILE_WIDTH, 0);
-      int videoOutHeight = intent.getIntExtra(EXTRA_SAVE_REMOTE_VIDEO_TO_FILE_HEIGHT, 0);
-      try {
-        videoFileRenderer = new VideoFileRenderer(
-            saveRemoteVideoToFile, videoOutWidth, videoOutHeight, eglBase.getEglBaseContext());
-        remoteSinks.add(videoFileRenderer);
-      } catch (IOException e) {
-        throw new RuntimeException(
-            "Failed to open video file for output: " + saveRemoteVideoToFile, e);
-      }
+      pipRenderer.setZOrderMediaOverlay(true);
+      pipRenderer.setEnableHardwareScaler(true /* enabled */);
+      fullscreenRenderer.setEnableHardwareScaler(false /* enabled */);
+      // Start with local feed in fullscreen and swap it to the pip when the call is connected.
+      setSwappedFeeds(true /* isSwappedFeeds */);
     }
-    fullscreenRenderer.init(eglBase.getEglBaseContext(), null);
-    fullscreenRenderer.setScalingType(ScalingType.SCALE_ASPECT_FILL);
-
-    pipRenderer.setZOrderMediaOverlay(true);
-    pipRenderer.setEnableHardwareScaler(true /* enabled */);
-    fullscreenRenderer.setEnableHardwareScaler(false /* enabled */);
-    // Start with local feed in fullscreen and swap it to the pip when the call is connected.
-    setSwappedFeeds(true /* isSwappedFeeds */);
-
     // Check for mandatory permissions.
     for (String permission : MANDATORY_PERMISSIONS) {
       if (checkCallingOrSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
@@ -346,18 +352,19 @@ public class CallActivity extends Activity implements AppRTCClient.SignalingEven
     // Create CPU monitor
     if (CpuMonitor.isSupported()) {
       cpuMonitor = new CpuMonitor(this);
-      hudFragment.setCpuMonitor(cpuMonitor);
+      if (hudFragment != null) hudFragment.setCpuMonitor(cpuMonitor);
     }
 
-    // Send intent arguments to fragments.
-    callFragment.setArguments(intent.getExtras());
-    hudFragment.setArguments(intent.getExtras());
-    // Activate call and HUD fragments and start the call.
-    FragmentTransaction ft = getFragmentManager().beginTransaction();
-    ft.add(R.id.call_fragment_container, callFragment);
-    ft.add(R.id.hud_fragment_container, hudFragment);
-    ft.commit();
-
+    if (videoCallEnabled) {
+      // Send intent arguments to fragments.
+      callFragment.setArguments(intent.getExtras());
+      hudFragment.setArguments(intent.getExtras());
+      // Activate call and HUD fragments and start the call.
+      FragmentTransaction ft = getFragmentManager().beginTransaction();
+      ft.add(R.id.call_fragment_container, callFragment);
+      ft.add(R.id.hud_fragment_container, hudFragment);
+      ft.commit();
+    }
     // For command line execution run connection for <runTimeMs> and exit.
     if (commandLineRun && runTimeMs > 0) {
       (new Handler()).postDelayed(new Runnable() {
@@ -529,7 +536,7 @@ public class CallActivity extends Activity implements AppRTCClient.SignalingEven
 
   @Override
   public void onVideoScalingSwitch(ScalingType scalingType) {
-    fullscreenRenderer.setScalingType(scalingType);
+    if (fullscreenRenderer!=null) fullscreenRenderer.setScalingType(scalingType);
   }
 
   @Override
@@ -550,7 +557,7 @@ public class CallActivity extends Activity implements AppRTCClient.SignalingEven
 
   // Helper functions.
   private void toggleCallControlFragmentVisibility() {
-    if (!connected || !callFragment.isAdded()) {
+    if (!connected || !videoCallEnabled || !callFragment.isAdded()) {
       return;
     }
     // Show/hide call control fragment
@@ -620,8 +627,8 @@ public class CallActivity extends Activity implements AppRTCClient.SignalingEven
   // Disconnect from remote resources, dispose of local resources, and exit.
   private void disconnect() {
     activityRunning = false;
-    remoteProxyRenderer.setTarget(null);
-    localProxyVideoSink.setTarget(null);
+    if (remoteProxyRenderer != null) remoteProxyRenderer.setTarget(null);
+    if (localProxyVideoSink != null) localProxyVideoSink.setTarget(null);
     if (appRtcClient != null) {
       appRtcClient.disconnectFromRoom();
       appRtcClient = null;
@@ -730,12 +737,14 @@ public class CallActivity extends Activity implements AppRTCClient.SignalingEven
   }
 
   private void setSwappedFeeds(boolean isSwappedFeeds) {
-    Logging.d(TAG, "setSwappedFeeds: " + isSwappedFeeds);
-    this.isSwappedFeeds = isSwappedFeeds;
-    localProxyVideoSink.setTarget(isSwappedFeeds ? fullscreenRenderer : pipRenderer);
-    remoteProxyRenderer.setTarget(isSwappedFeeds ? pipRenderer : fullscreenRenderer);
-    fullscreenRenderer.setMirror(isSwappedFeeds);
-    pipRenderer.setMirror(!isSwappedFeeds);
+    if (videoCallEnabled ) {
+      Logging.d(TAG, "setSwappedFeeds: " + isSwappedFeeds);
+      this.isSwappedFeeds = isSwappedFeeds;
+      localProxyVideoSink.setTarget(isSwappedFeeds ? fullscreenRenderer : pipRenderer);
+      remoteProxyRenderer.setTarget(isSwappedFeeds ? pipRenderer : fullscreenRenderer);
+      fullscreenRenderer.setMirror(isSwappedFeeds);
+      pipRenderer.setMirror(!isSwappedFeeds);
+    }
   }
 
   // -----Implementation of AppRTCClient.AppRTCSignalingEvents ---------------
@@ -956,7 +965,7 @@ public class CallActivity extends Activity implements AppRTCClient.SignalingEven
       @Override
       public void run() {
         if (!isError && connected) {
-          hudFragment.updateEncoderStatistics(reports);
+          if (hudFragment !=null ) hudFragment.updateEncoderStatistics(reports);
         }
       }
     });

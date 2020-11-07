@@ -27,6 +27,8 @@ import ua.naiksoftware.stomp.dto.StompHeader;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+
 import org.appspot.apprtc.util.AsyncHttpURLConnection;
 import org.appspot.apprtc.util.AsyncHttpURLConnection.AsyncHttpEvents;
 import org.json.JSONException;
@@ -41,19 +43,25 @@ import org.json.JSONObject;
  */
 public class StompWebSocketChannelClient {
   private static final String TAG = "WSChannelRTCClient";
-  private static final String SEND_URL = "/app/signal";
+  public static final String SEND_URL = "/app/signal";
+  public static final String REGISTER_SOCKET = "/app/register";
+  public static final String RANDOM_CHAT_URL = "/app/randomChat";
+  public static final String LEAVE_ROOM_URL = "/app/leaveRoom";
   private static final int CLOSE_TIMEOUT = 1000;
+  String signature = UUID.randomUUID().toString().replace("-","");
   private final WebSocketChannelEvents events;
-  private final Handler handler;
+  private final Handler handler; // Local thread of WebRTCClient, not main thread
   private StompClient ws;
   private CompositeDisposable compositeDisposable;
+  private Gson gson = new Gson();
+  private RegisterUser registerUser;
 
   private String wsServerUrl;
   private String postServerUrl;
-  @Nullable
-  private String roomID;
-  @Nullable
-  private String clientID;
+  //@Nullable
+  //private String roomID;
+  //@Nullable
+  //private String clientID;
   private WebSocketConnectionState state;
   // Do not remove this member variable. If this is removed, the observer gets garbage collected and
   // this causes test breakages.
@@ -82,8 +90,8 @@ public class StompWebSocketChannelClient {
   public StompWebSocketChannelClient(Handler handler, WebSocketChannelEvents events) {
     this.handler = handler;
     this.events = events;
-    roomID = null;
-    clientID = null;
+    //roomID = null;
+    //clientID = null;
     state = WebSocketConnectionState.NEW;
   }
 
@@ -170,15 +178,32 @@ public class StompWebSocketChannelClient {
     compositeDisposable = new CompositeDisposable();
   }
 
-  public void register(final String roomID, final String clientID) {
+  public void register(final String roomID, final String clientID, RegisterUser registerUser) {
     checkIfCalledOnValidThread();
-    this.roomID = roomID;
-    this.clientID = clientID;
+    //this.roomID = roomID;
+    //this.clientID = clientID;
+    this.registerUser = registerUser;
     if (state != WebSocketConnectionState.CONNECTED) {
       Log.w(TAG, "WebSocket register() in state " + state);
       return;
     }
-    Log.d(TAG, "Registering WebSocket for room " + roomID + ". ClientID: " + clientID);
+    try {
+      String msg = gson.toJson(registerUser);
+      Log.d(TAG, "Send: " + msg);
+      registerSocket(msg);
+      /*
+      state = WebSocketConnectionState.REGISTERED;
+      */
+      // Send any previously accumulated messages.
+      for (String sendMessage : wsSendQueue) {
+        send(sendMessage);
+      }
+      wsSendQueue.clear();
+
+    } catch (Exception e) {
+      reportError("WebSocket register JSON error: " + e.getMessage());
+    }
+    /*Log.d(TAG, "Registering WebSocket for room " + roomID + ". ClientID: " + clientID);
     JSONObject json = new JSONObject();
     try {
       json.put("cmd", "register");
@@ -194,12 +219,23 @@ public class StompWebSocketChannelClient {
       wsSendQueue.clear();
     } catch (JSONException e) {
       reportError("WebSocket register JSON error: " + e.getMessage());
-    }
+    }*/
   }
 
-  void sendSocket(String msg){
+  void registerSocket(String msg){
+    Log.d(TAG, "REGISTER SOCKET: " + msg);
+    compositeDisposable.add(ws.send(REGISTER_SOCKET, msg)
+            .compose(applySchedulers())
+            .subscribe(() -> {
+              Log.d(TAG, "STOMP echo send successfully");
+            }, throwable -> {
+              Log.e(TAG, "Error send STOMP echo", throwable);
+            }));
+  }
+
+  private void sendSocket(String msg, String sendUrl){
     Log.d(TAG, "SEND SOCKET: " + msg);
-    compositeDisposable.add(ws.send(SEND_URL, msg)
+    compositeDisposable.add(ws.send(sendUrl, msg)
             .compose(applySchedulers())
             .subscribe(() -> {
               Log.d(TAG, "STOMP echo send successfully");
@@ -216,6 +252,10 @@ public class StompWebSocketChannelClient {
   }
 
   public void send(String message) {
+    send(message, SEND_URL);
+  }
+
+  public void send(String message, String sendUrl) {
     checkIfCalledOnValidThread();
     switch (state) {
       case NEW:
@@ -230,16 +270,7 @@ public class StompWebSocketChannelClient {
         Log.e(TAG, "WebSocket send() in error or closed state : " + message);
         return;
       case REGISTERED:
-        JSONObject json = new JSONObject();
-        try {
-          json.put("cmd", "send");
-          json.put("msg", message);
-          message = json.toString();
-          Log.d(TAG, "C->WSS: " + message);
-          sendSocket(message);
-        } catch (JSONException e) {
-          reportError("WebSocket send JSON error: " + e.getMessage());
-        }
+        sendSocket(message, sendUrl);
         break;
     }
   }
@@ -256,7 +287,7 @@ public class StompWebSocketChannelClient {
     Log.d(TAG, "Disconnect WebSocket. State: " + state);
     if (state == WebSocketConnectionState.REGISTERED) {
       // Send "bye" to WebSocket server.
-      send("{\"type\": \"bye\"}");
+      //send("{\"type\": \"bye\"}");
       state = WebSocketConnectionState.CONNECTED;
       // Send http DELETE to http WebSocket server.
       sendWSSMessage("DELETE", "");
@@ -300,7 +331,7 @@ public class StompWebSocketChannelClient {
 
   // Asynchronously send POST/DELETE to WebSocket server.
   private void sendWSSMessage(final String method, final String message) {
-    String postUrl = postServerUrl + "/" + roomID + "/" + clientID;
+    /*String postUrl = postServerUrl + "/" + roomID + "/" + clientID;
     Log.d(TAG, "WS " + method + " : " + postUrl + " : " + message);
     AsyncHttpURLConnection httpConnection =
         new AsyncHttpURLConnection(method, postUrl, message, new AsyncHttpEvents() {
@@ -312,7 +343,7 @@ public class StompWebSocketChannelClient {
           @Override
           public void onHttpComplete(String response) {}
         });
-    httpConnection.send();
+    httpConnection.send();*/
   }
 
   // Helper method for debugging purposes. Ensures that WebSocket method is
@@ -357,9 +388,9 @@ public class StompWebSocketChannelClient {
         public void run() {
           state = WebSocketConnectionState.CONNECTED;
           // Check if we have pending register request.
-          if (roomID != null && clientID != null) {
-            register(roomID, clientID);
-          }
+          //if (roomID != null && clientID != null && registerUser != null) {
+            register(null, null, registerUser);
+          //}
         }
       });
     }
@@ -376,8 +407,8 @@ public class StompWebSocketChannelClient {
         @Override
         public void run() {
           if (state != WebSocketConnectionState.CLOSED) {
-            state = WebSocketConnectionState.CLOSED;
             events.onWebSocketClose();
+            state = WebSocketConnectionState.CLOSED;
           }
         }
       });
@@ -390,8 +421,20 @@ public class StompWebSocketChannelClient {
       handler.post(new Runnable() {
         @Override
         public void run() {
-          if (state == WebSocketConnectionState.CONNECTED
-              || state == WebSocketConnectionState.REGISTERED) {
+          if (state == WebSocketConnectionState.CONNECTED) {
+            // Handle registered response message
+            RegisteredResponse response = gson.fromJson(payload, RegisteredResponse.class);
+            if (response!=null && response.isSuccess()) {
+              if (Code.REGISTERED.equals(response.code)) {
+                state = WebSocketConnectionState.REGISTERED;
+                Log.d(TAG, "Registered Success");
+                events.onWebSocketMessage(message);
+              }
+            } else {
+              Log.d(TAG, "Socket failed with message: "+payload);
+            }
+          } else if (state == WebSocketConnectionState.REGISTERED) {
+            // handle message
             events.onWebSocketMessage(message);
           }
         }

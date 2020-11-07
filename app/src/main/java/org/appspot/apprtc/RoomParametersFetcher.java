@@ -139,12 +139,13 @@ public class RoomParametersFetcher {
       }
       // Request TURN servers.
       if (!isTurnPresent && !roomJson.optString("ice_server_url").isEmpty()) {
-        List<PeerConnection.IceServer> turnServers =
+        // Skip that
+        /*List<PeerConnection.IceServer> turnServers =
             requestTurnServers(roomJson.getString("ice_server_url"));
         for (PeerConnection.IceServer turnServer : turnServers) {
           Log.d(TAG, "TurnServer: " + turnServer);
           iceServers.add(turnServer);
-        }
+        }*/
       }
 
       SignalingParameters params = new SignalingParameters(
@@ -152,9 +153,9 @@ public class RoomParametersFetcher {
       events.onSignalingParametersReady(params);
     } catch (JSONException e) {
       events.onSignalingParametersError("Room JSON parsing error: " + e.toString());
-    } catch (IOException e) {
+    } /*catch (IOException e) {
       events.onSignalingParametersError("Room IO error: " + e.toString());
-    }
+    }*/
   }
 
   // Requests & returns a TURN ICE Server based on a request URL.  Must be run
